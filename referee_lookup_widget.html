@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Referee Lookup Widget</title>
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -87,6 +88,17 @@
     color: #999;
     font-style: italic;
   }
+
+  #selected-info {
+    display: none;
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #e8f4e8;
+    border: 1px solid #a5d6a7;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #2e7d32;
+  }
 </style>
 </head>
 <body>
@@ -100,6 +112,7 @@
   />
   <div id="dropdown"></div>
 </div>
+<div id="selected-info"></div>
 <div id="status">Loading referee data...</div>
 
 <script>
@@ -108,26 +121,110 @@
   const GID       = '1452173467';
   const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 
-  // JotForm field IDs — numbers only
+  // JotForm field IDs — numbers only (no #, no input_)
   const FIELD_NAME  = '775';
   const FIELD_EMAIL = '719';
   const FIELD_PHONE = '781';
   // ─────────────────────────────────────────────────────────────────────────────
 
   let referees = [];
+  let widgetReady = false;
+
+  // ── JOTFORM WIDGET API ───────────────────────────────────────────────────────
+  JFCustomWidget.subscribe('ready', function() {
+    widgetReady = true;
+    loadReferees();
+  });
+
+  // Fallback if Widget API doesn't fire
+  setTimeout(function() {
+    if (!widgetReady) loadReferees();
+  }, 1500);
+
+  function fillJotFormFields(referee) {
+    // Method 1: JotForm Widget API - set other fields
+    if (typeof JFCustomWidget !== 'undefined') {
+      // Set this widget's own value
+      JFCustomWidget.setValue(referee.name);
+
+      // Send data to other fields using JotForm's postMessage protocol
+      sendToField(FIELD_NAME,  referee.name);
+      sendToField(FIELD_EMAIL, referee.email);
+      sendToField(FIELD_PHONE, referee.phone);
+    }
+
+    // Method 2: Direct postMessage with JotForm's known formats
+    var formats = [
+      // Format A
+      { type: 'updateQuestion', questionID: FIELD_NAME,  value: referee.name  },
+      { type: 'updateQuestion', questionID: FIELD_EMAIL, value: referee.email },
+      { type: 'updateQuestion', questionID: FIELD_PHONE, value: referee.phone },
+      // Format B
+      { action: 'setFieldValue', fieldID: FIELD_NAME,  value: referee.name  },
+      { action: 'setFieldValue', fieldID: FIELD_EMAIL, value: referee.email },
+      { action: 'setFieldValue', fieldID: FIELD_PHONE, value: referee.phone },
+    ];
+
+    formats.forEach(function(msg) {
+      window.parent.postMessage(JSON.stringify(msg), '*');
+      window.parent.postMessage(msg, '*');
+    });
+
+    // Method 3: Try direct DOM
+    try {
+      var doc = window.parent.document;
+      fillField(doc, 'input_' + FIELD_NAME,  referee.name);
+      fillField(doc, 'input_' + FIELD_EMAIL, referee.email);
+      fillField(doc, 'input_' + FIELD_PHONE, referee.phone);
+    } catch(e) {}
+
+    // Show confirmation inside widget
+    var info = document.getElementById('selected-info');
+    info.style.display = 'block';
+    info.innerHTML = '✓ <strong>' + referee.name + '</strong><br>' +
+                     referee.email + (referee.phone ? ' · ' + referee.phone : '');
+
+    setStatus('✓ Referee selected', 'success');
+  }
+
+  function sendToField(fieldID, value) {
+    var msg = JSON.stringify({
+      type: 'widgetEvent',
+      action: 'setValue',
+      fieldID: fieldID,
+      value: value
+    });
+    window.parent.postMessage(msg, '*');
+  }
+
+  function fillField(doc, id, value) {
+    var el = doc.getElementById(id);
+    if (!el) return;
+    try {
+      var setter = Object.getOwnPropertyDescriptor(
+        window.parent.HTMLInputElement.prototype, 'value'
+      ).set;
+      setter.call(el, value);
+    } catch(e) { el.value = value; }
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur',   { bubbles: true }));
+  }
 
   // ── CSV PARSER ───────────────────────────────────────────────────────────────
   function parseCSV(text) {
-    const lines = text.trim().split('\n');
+    var lines = text.trim().split('\n');
     if (lines.length < 2) return [];
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
-    const nameIdx  = headers.findIndex(h => h.includes('name'));
-    const emailIdx = headers.findIndex(h => h.includes('email'));
-    const phoneIdx = headers.findIndex(h => h.includes('phone'));
-    const results = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
-      const clean = cols.map(c => c ? c.trim().replace(/^"|"$/g, '') : '');
+    var headers = lines[0].split(',').map(function(h) {
+      return h.trim().replace(/^"|"$/g, '').toLowerCase();
+    });
+    var nameIdx  = headers.findIndex(function(h) { return h.includes('name');  });
+    var emailIdx = headers.findIndex(function(h) { return h.includes('email'); });
+    var phoneIdx = headers.findIndex(function(h) { return h.includes('phone'); });
+    var results = [];
+    for (var i = 1; i < lines.length; i++) {
+      var cols = lines[i].match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
+      var clean = cols.map(function(c) { return c ? c.trim().replace(/^"|"$/g, '') : ''; });
       if (!clean[nameIdx]) continue;
       results.push({
         name:  clean[nameIdx]  || '',
@@ -139,109 +236,43 @@
   }
 
   // ── LOAD SHEET ───────────────────────────────────────────────────────────────
-  async function loadReferees() {
-    try {
-      const res = await fetch(CSV_URL);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      referees = parseCSV(text);
-      setStatus(referees.length > 0
-        ? `✓ ${referees.length} referees loaded. Type a last name to search.`
-        : 'No referee data found in sheet.', referees.length > 0 ? 'success' : 'error');
-    } catch (e) {
-      setStatus('⚠ Could not load referee list. Check sheet is public.', 'error');
-    }
+  function loadReferees() {
+    fetch(CSV_URL)
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function(text) {
+        referees = parseCSV(text);
+        setStatus(referees.length > 0
+          ? '✓ ' + referees.length + ' referees loaded. Type a last name to search.'
+          : 'No referee data found.', referees.length > 0 ? 'success' : 'error');
+      })
+      .catch(function() {
+        setStatus('⚠ Could not load referee list.', 'error');
+      });
   }
 
-  function setStatus(msg, type = '') {
-    const el = document.getElementById('status');
+  function setStatus(msg, type) {
+    var el = document.getElementById('status');
     el.textContent = msg;
-    el.className = type;
+    el.className = type || '';
   }
 
   // ── SEARCH ───────────────────────────────────────────────────────────────────
   function searchReferees(query) {
     if (!query || query.length < 2) return [];
-    const q = query.toLowerCase().trim();
-    return referees.filter(r => {
-      const parts = r.name.toLowerCase().split(/\s+/);
-      const lastName = parts[parts.length - 1];
+    var q = query.toLowerCase().trim();
+    return referees.filter(function(r) {
+      var parts = r.name.toLowerCase().split(/\s+/);
+      var lastName = parts[parts.length - 1];
       return lastName.startsWith(q) || r.name.toLowerCase().includes(q);
     });
   }
 
-  // ── FILL JOTFORM FIELDS ──────────────────────────────────────────────────────
-  // JotForm's official Widget API uses window.parent.postMessage with this format
-  function fillJotFormFields(referee) {
-
-    // Method 1: JotForm official Widget API format
-    // This is the documented way widgets communicate back to JotForm
-    window.parent.postMessage(JSON.stringify({
-      action: 'setValue',
-      value: referee.name,
-      fieldID: FIELD_NAME
-    }), '*');
-
-    window.parent.postMessage(JSON.stringify({
-      action: 'setValue',
-      value: referee.email,
-      fieldID: FIELD_EMAIL
-    }), '*');
-
-    window.parent.postMessage(JSON.stringify({
-      action: 'setValue',
-      value: referee.phone,
-      fieldID: FIELD_PHONE
-    }), '*');
-
-    // Method 2: JotForm form calculate / conditional trigger format
-    window.parent.postMessage(JSON.stringify({
-      type:  'setFieldValue',
-      name:  'input_' + FIELD_NAME,
-      value: referee.name
-    }), '*');
-
-    window.parent.postMessage(JSON.stringify({
-      type:  'setFieldValue',
-      name:  'input_' + FIELD_EMAIL,
-      value: referee.email
-    }), '*');
-
-    window.parent.postMessage(JSON.stringify({
-      type:  'setFieldValue',
-      name:  'input_' + FIELD_PHONE,
-      value: referee.phone
-    }), '*');
-
-    // Method 3: Try direct DOM access (works if same origin)
-    try {
-      const doc = window.parent.document;
-      fillField(doc, 'input_' + FIELD_NAME,  referee.name);
-      fillField(doc, 'input_' + FIELD_EMAIL, referee.email);
-      fillField(doc, 'input_' + FIELD_PHONE, referee.phone);
-    } catch(e) { /* cross-origin, expected */ }
-
-    setStatus(`✓ Selected: ${referee.name}`, 'success');
-  }
-
-  function fillField(doc, id, value) {
-    const el = doc.getElementById(id);
-    if (!el) return;
-    // Use native setter to trigger React/Vue watchers if any
-    try {
-      const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-      setter.call(el, value);
-    } catch(e) {
-      el.value = value;
-    }
-    el.dispatchEvent(new Event('input',  { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur',   { bubbles: true }));
-  }
-
   // ── UI ───────────────────────────────────────────────────────────────────────
-  const searchInput = document.getElementById('search-input');
-  const dropdown    = document.getElementById('dropdown');
+  var searchInput = document.getElementById('search-input');
+  var dropdown    = document.getElementById('dropdown');
 
   function renderDropdown(results) {
     dropdown.innerHTML = '';
@@ -250,14 +281,13 @@
       dropdown.style.display = 'block';
       return;
     }
-    results.forEach(r => {
-      const item = document.createElement('div');
+    results.forEach(function(r) {
+      var item = document.createElement('div');
       item.className = 'dropdown-item';
-      item.innerHTML = `
-        <div class="referee-name">${r.name}</div>
-        <div class="referee-details">${r.email}${r.phone ? ' · ' + r.phone : ''}</div>
-      `;
-      item.addEventListener('mousedown', e => {
+      item.innerHTML =
+        '<div class="referee-name">' + r.name + '</div>' +
+        '<div class="referee-details">' + r.email + (r.phone ? ' · ' + r.phone : '') + '</div>';
+      item.addEventListener('mousedown', function(e) {
         e.preventDefault();
         selectReferee(r);
       });
@@ -272,22 +302,25 @@
     fillJotFormFields(r);
   }
 
-  searchInput.addEventListener('input', () => {
-    const q = searchInput.value.trim();
+  searchInput.addEventListener('input', function() {
+    var q = searchInput.value.trim();
     if (q.length < 2) { dropdown.style.display = 'none'; return; }
     renderDropdown(searchReferees(q));
   });
 
-  searchInput.addEventListener('blur',  () => setTimeout(() => { dropdown.style.display = 'none'; }, 150));
-  searchInput.addEventListener('focus', () => {
-    const q = searchInput.value.trim();
+  searchInput.addEventListener('blur',  function() {
+    setTimeout(function() { dropdown.style.display = 'none'; }, 150);
+  });
+
+  searchInput.addEventListener('focus', function() {
+    var q = searchInput.value.trim();
     if (q.length >= 2) renderDropdown(searchReferees(q));
   });
 
-  searchInput.addEventListener('keydown', e => {
-    const items  = dropdown.querySelectorAll('.dropdown-item');
-    const active = dropdown.querySelector('.dropdown-item.active');
-    let idx = Array.from(items).indexOf(active);
+  searchInput.addEventListener('keydown', function(e) {
+    var items  = dropdown.querySelectorAll('.dropdown-item');
+    var active = dropdown.querySelector('.dropdown-item.active');
+    var idx    = Array.from(items).indexOf(active);
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -310,8 +343,6 @@
       dropdown.style.display = 'none';
     }
   });
-
-  loadReferees();
 </script>
 </body>
 </html>
