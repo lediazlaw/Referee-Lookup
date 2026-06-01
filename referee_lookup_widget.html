@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Referee Lookup Widget</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: transparent;
+    padding: 4px 0;
+  }
+
+  #search-container {
+    position: relative;
+    width: 100%;
+  }
+
+  #search-input {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 14px;
+    border: 1px solid #b8c2cc;
+    border-radius: 4px;
+    outline: none;
+    background: #fff;
+    color: #333;
+    transition: border-color 0.2s;
+  }
+
+  #search-input:focus {
+    border-color: #0075e2;
+    box-shadow: 0 0 0 2px rgba(0,117,226,0.15);
+  }
+
+  #search-input::placeholder {
+    color: #aaa;
+  }
+
+  #dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: #fff;
+    border: 1px solid #b8c2cc;
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    z-index: 99999;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .dropdown-item {
+    padding: 9px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #222;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background 0.15s;
+  }
+
+  .dropdown-item:last-child { border-bottom: none; }
+
+  .dropdown-item:hover, .dropdown-item.active {
+    background: #e8f0fe;
+    color: #0075e2;
+  }
+
+  .dropdown-item .referee-name {
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .dropdown-item .referee-details {
+    font-size: 11px;
+    color: #777;
+    margin-top: 2px;
+  }
+
+  #status {
+    font-size: 11px;
+    margin-top: 5px;
+    color: #888;
+    min-height: 16px;
+  }
+
+  #status.success { color: #2e7d32; font-weight: 600; }
+  #status.error   { color: #c62828; }
+  #status.loading { color: #555; }
+
+  .no-results {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #999;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<div id="search-container">
+  <input
+    type="text"
+    id="search-input"
+    placeholder="Type referee last name to search..."
+    autocomplete="off"
+  />
+  <div id="dropdown"></div>
+</div>
+<div id="status">Loading referee data...</div>
+
+<script>
+  // ── CONFIG ──────────────────────────────────────────────────────────────────
+  const SHEET_ID  = '1L0TpUPxEfpcU-vF4puekZXZiKjd4yYEE-aPBfhehZpA';
+  const GID       = '1452173467';
+  const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
+
+  // JotForm field IDs (without the #)
+  const FIELD_NAME  = 'input_775';
+  const FIELD_EMAIL = 'input_719';
+  const FIELD_PHONE = 'input_781';
+  // ────────────────────────────────────────────────────────────────────────────
+
+  let referees = [];
+
+  // Parse CSV text into array of objects
+  function parseCSV(text) {
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return [];
+    // Detect headers
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+    const nameIdx  = headers.findIndex(h => h.includes('name'));
+    const emailIdx = headers.findIndex(h => h.includes('email'));
+    const phoneIdx = headers.findIndex(h => h.includes('phone'));
+
+    const results = [];
+    for (let i = 1; i < lines.length; i++) {
+      // Handle quoted commas
+      const cols = lines[i].match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
+      const clean = cols.map(c => c ? c.trim().replace(/^"|"$/g, '') : '');
+      if (!clean[nameIdx]) continue;
+      results.push({
+        name:  clean[nameIdx]  || '',
+        email: clean[emailIdx] || '',
+        phone: clean[phoneIdx] || ''
+      });
+    }
+    return results;
+  }
+
+  // Load Google Sheet
+  async function loadReferees() {
+    try {
+      const res = await fetch(CSV_URL);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      referees = parseCSV(text);
+      setStatus(referees.length > 0
+        ? `✓ ${referees.length} referees loaded. Type a last name to search.`
+        : 'No referee data found in sheet.', referees.length > 0 ? 'success' : 'error');
+    } catch (e) {
+      setStatus('⚠ Could not load referee list. Check sheet is public.', 'error');
+      console.error(e);
+    }
+  }
+
+  function setStatus(msg, type = '') {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = type;
+  }
+
+  // Search referees by last name (or any part of name)
+  function searchReferees(query) {
+    if (!query || query.length < 2) return [];
+    const q = query.toLowerCase().trim();
+    return referees.filter(r => {
+      const parts = r.name.toLowerCase().split(/\s+/);
+      const lastName = parts[parts.length - 1];
+      return lastName.startsWith(q) || r.name.toLowerCase().includes(q);
+    });
+  }
+
+  // Fill JotForm fields – works inside widget iframe via postMessage
+  function fillJotFormFields(referee) {
+    // Try direct DOM access (same-origin, unlikely but possible)
+    tryDirectFill(referee);
+
+    // postMessage to parent JotForm page
+    const msg = {
+      type: 'refereeLookup',
+      fields: {
+        [FIELD_NAME]:  referee.name,
+        [FIELD_EMAIL]: referee.email,
+        [FIELD_PHONE]: referee.phone
+      }
+    };
+    window.parent.postMessage(msg, '*');
+    window.top   && window.top.postMessage(msg, '*');
+
+    setStatus(`✓ Filled: ${referee.name}`, 'success');
+  }
+
+  function tryDirectFill(referee) {
+    try {
+      const doc = window.parent.document;
+      setField(doc, FIELD_NAME,  referee.name);
+      setField(doc, FIELD_EMAIL, referee.email);
+      setField(doc, FIELD_PHONE, referee.phone);
+    } catch(e) { /* cross-origin – expected */ }
+  }
+
+  function setField(doc, id, value) {
+    const el = doc.getElementById(id);
+    if (!el) return;
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    nativeInputValueSetter.call(el, value);
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // ── UI ──────────────────────────────────────────────────────────────────────
+  const searchInput = document.getElementById('search-input');
+  const dropdown    = document.getElementById('dropdown');
+
+  function renderDropdown(results) {
+    dropdown.innerHTML = '';
+    if (results.length === 0) {
+      dropdown.innerHTML = '<div class="no-results">No referees found</div>';
+      dropdown.style.display = 'block';
+      return;
+    }
+    results.forEach((r, i) => {
+      const item = document.createElement('div');
+      item.className = 'dropdown-item';
+      item.innerHTML = `
+        <div class="referee-name">${r.name}</div>
+        <div class="referee-details">${r.email}${r.phone ? ' · ' + r.phone : ''}</div>
+      `;
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        selectReferee(r);
+      });
+      dropdown.appendChild(item);
+    });
+    dropdown.style.display = 'block';
+  }
+
+  function selectReferee(r) {
+    searchInput.value = r.name;
+    dropdown.style.display = 'none';
+    fillJotFormFields(r);
+  }
+
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.trim();
+    if (q.length < 2) {
+      dropdown.style.display = 'none';
+      return;
+    }
+    const results = searchReferees(q);
+    renderDropdown(results);
+  });
+
+  searchInput.addEventListener('blur', () => {
+    setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+  });
+
+  searchInput.addEventListener('focus', () => {
+    const q = searchInput.value.trim();
+    if (q.length >= 2) renderDropdown(searchReferees(q));
+  });
+
+  // Keyboard navigation
+  searchInput.addEventListener('keydown', (e) => {
+    const items = dropdown.querySelectorAll('.dropdown-item');
+    const active = dropdown.querySelector('.dropdown-item.active');
+    let idx = Array.from(items).indexOf(active);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (idx < items.length - 1) {
+        active && active.classList.remove('active');
+        items[idx + 1].classList.add('active');
+        items[idx + 1].scrollIntoView({ block: 'nearest' });
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (idx > 0) {
+        active && active.classList.remove('active');
+        items[idx - 1].classList.add('active');
+        items[idx - 1].scrollIntoView({ block: 'nearest' });
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (active) active.dispatchEvent(new MouseEvent('mousedown'));
+    } else if (e.key === 'Escape') {
+      dropdown.style.display = 'none';
+    }
+  });
+
+  // Boot
+  loadReferees();
+</script>
+</body>
+</html>
